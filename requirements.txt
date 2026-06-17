@@ -2,7 +2,7 @@ streamlit>=1.36
 pandas>=2.0
 # Postgres driver — used only when DATABASE_URL is set (hosted). Local dev runs
 # on SQLite from the stdlib, so this is unused there but harmless to install.
-psycopg[binary]>=3.1
+psycopg[binary,pool]>=3.1
 # Google Calendar two-way sync (Schedule tab). Optional — the app degrades
 # gracefully and uses add-to-calendar links if these aren't installed.
 google-api-python-client>=2.0

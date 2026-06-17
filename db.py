@@ -121,6 +121,34 @@ def _is_postgres() -> bool:
     return _database_url().startswith("postgresql://")
 
 
+# A process-wide connection pool for Postgres. Without this we'd open a fresh
+# TLS connection to the remote DB on every query, and a single page render fires
+# off many queries — the dominant source of latency when hosted. The pool keeps
+# warm connections around and is thread-safe (Streamlit reruns across threads).
+_PG_POOL = None
+
+
+def _get_pool():
+    global _PG_POOL
+    if _PG_POOL is None:
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+
+        _PG_POOL = ConnectionPool(
+            _database_url(),
+            min_size=1,
+            max_size=5,
+            kwargs={"row_factory": dict_row},
+            open=True,
+        )
+        # Close cleanly at process exit so the pool's worker thread isn't joined
+        # during interpreter finalization (which logs a noisy traceback).
+        import atexit
+
+        atexit.register(_PG_POOL.close)
+    return _PG_POOL
+
+
 class _Conn:
     """Thin wrapper so the same query code runs on SQLite and Postgres.
 
@@ -157,21 +185,20 @@ class _Conn:
 @contextmanager
 def get_conn():
     if _is_postgres():
-        import psycopg
-        from psycopg.rows import dict_row
-
-        raw = psycopg.connect(_database_url(), row_factory=dict_row)
-        conn = _Conn(raw, "postgres")
+        # Borrow a warm connection from the pool; it commits (or rolls back on
+        # error) and returns the connection to the pool on block exit.
+        with _get_pool().connection() as raw:
+            yield _Conn(raw, "postgres")
     else:
         raw = sqlite3.connect(DB_PATH)
         raw.row_factory = sqlite3.Row
         raw.execute("PRAGMA foreign_keys = ON")
         conn = _Conn(raw, "sqlite")
-    try:
-        yield conn
-        raw.commit()
-    finally:
-        raw.close()
+        try:
+            yield conn
+            raw.commit()
+        finally:
+            raw.close()
 
 
 def init_db() -> None:
