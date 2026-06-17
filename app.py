@@ -378,7 +378,7 @@ with tabs[0]:
         "One weekend. Zero chill. Before Tracey becomes a Mrs., we're sending her off with "
         "sun, sips, and shenanigans. Use the tabs up top to **lock the crew**, "
         "**pick the weekend**, **vote on the city**, and **split the damage** — "
-        "let's make it unforgettable. ✨ _#LastFlingBeforeTheRing_"
+        "let's make it un-Fung-ettable. ✨ _#LastFlingBeforeTheRing_"
     )
     if notes:
         st.success(f"💌 {notes}")
