@@ -34,6 +34,15 @@ import gcal
 from settle import net_balances, settle
 
 st.set_page_config(page_title="Bach Bash Planner", page_icon="🥂", layout="wide")
+
+# On Streamlit Cloud the DATABASE_URL lives in st.secrets; expose it as an env
+# var so db.py connects to Postgres. Locally (no secret) db.py uses SQLite.
+try:
+    if "DATABASE_URL" in st.secrets and not os.environ.get("DATABASE_URL"):
+        os.environ["DATABASE_URL"] = str(st.secrets["DATABASE_URL"])
+except Exception:
+    pass
+
 db.init_db()
 
 
@@ -261,7 +270,7 @@ tabs = st.tabs(
 
 # ================================================================= HOME ===
 with tabs[0]:
-    goh = db.get_setting("guest_of_honor", "") or "Our Girl"
+    goh = db.get_setting("guest_of_honor", "") or "Tracey"
     location = db.get_setting("location", "")
     notes = db.get_setting("notes", "")
 
@@ -271,7 +280,8 @@ with tabs[0]:
         st.session_state["_welcomed"] = True
 
     # --- Colorful hero banner ---
-    sub = f"She said YES 💍 — now we party for {goh}!"
+    sub = "She said YES to Brian 💍 — now let's have some Fung! 🎉"
+    tagline = "Tracey Fung is tying the knot — time for one un-Fung-ettable send-off."
     loc_line = f"📍 {location} · " if location else ""
     st.markdown(
         f"""
@@ -291,6 +301,7 @@ with tabs[0]:
                 🥂 {goh}'s Bachelorette 🥂
             </div>
             <div style="font-size: 22px; font-weight: 600; opacity:.97;">{sub}</div>
+            <div style="font-size: 15px; font-weight: 500; opacity:.92; margin-top: 6px;">{tagline}</div>
             <div style="font-size: 30px; margin-top: 14px;">💃🪩🍾🌴✨👯‍♀️🎉</div>
         </div>
         """,
@@ -302,7 +313,7 @@ with tabs[0]:
     # --- Photo gallery of the bride-to-be ---
     photos = list_photos()
     if photos:
-        st.markdown("#### 💖 The girl of the hour")
+        st.markdown("#### 💖 The Fung-to-be")
         cols = st.columns(min(3, len(photos)))
         for i, path in enumerate(photos):
             with cols[i % len(cols)]:
@@ -364,9 +375,10 @@ with tabs[0]:
 
     st.markdown(
         "#### 🎀 The mission\n"
-        "One unforgettable weekend. Sun, sips, and shenanigans for the bride-to-be. "
-        "Use the tabs up top to **lock the crew**, **pick the weekend**, **vote on the city**, "
-        "and **split the damage** — let's make it iconic. ✨"
+        "One weekend. Zero chill. All Fung. Before Tracey becomes a Mrs., we're sending "
+        "her off with sun, sips, and shenanigans. Use the tabs up top to **lock the crew**, "
+        "**pick the weekend**, **vote on the city**, and **split the damage** — "
+        "let's make it Fung-forgettable. ✨ _#FungAndGames · #LastFlingBeforeTheRing_"
     )
     if notes:
         st.success(f"💌 {notes}")

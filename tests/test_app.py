@@ -8,7 +8,9 @@ import sys
 import tempfile
 from datetime import date
 
-# Use a throwaway DB before importing the app modules.
+# Tests always run against a throwaway local SQLite DB — drop any ambient
+# DATABASE_URL so a developer's Postgres env can't hijack the suite.
+os.environ.pop("DATABASE_URL", None)
 _TMP = tempfile.mkdtemp()
 os.environ["BACH_DB_PATH"] = os.path.join(_TMP, "test.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))

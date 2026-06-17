@@ -1,13 +1,21 @@
-"""SQLite persistence layer for the Bach Bash planner.
+"""Persistence layer for the Bach Bash planner.
 
-Everything lives in a single local SQLite file so data survives Streamlit
-reruns and restarts. No external services required (the Google Calendar piece
-is the only network dependency, and it lives in gcal.py).
+Dual-mode by design:
+  * Local dev / tests  -> a single local SQLite file (zero setup).
+  * Hosted             -> Postgres, when a DATABASE_URL env var is set (e.g.
+                          a free Neon database on Streamlit Community Cloud).
+
+The host filesystem on free platforms is ephemeral, so SQLite-on-disk would be
+wiped on every reboot. Pointing DATABASE_URL at a managed Postgres keeps the
+crew's votes/expenses/etc. durable across restarts. The SQL we use is almost
+identical across both engines; the few differences (autoincrement, placeholder
+style, last-insert-id, schema execution) are handled in `_Conn` below.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -100,21 +108,84 @@ CREATE TABLE IF NOT EXISTS city_votes (
 """
 
 
+# ----------------------------------------------------------- engine select ---
+def _database_url() -> str:
+    """Normalized Postgres URL, or '' when running on local SQLite."""
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if url.startswith("postgres://"):  # SQLAlchemy/Heroku-style alias
+        url = "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+def _is_postgres() -> bool:
+    return _database_url().startswith("postgresql://")
+
+
+class _Conn:
+    """Thin wrapper so the same query code runs on SQLite and Postgres.
+
+    Translates the `?` placeholder style to `%s` for Postgres and papers over
+    the last-insert-id difference (`cursor.lastrowid` vs `RETURNING id`).
+    """
+
+    def __init__(self, raw, backend: str):
+        self.raw = raw
+        self.backend = backend
+
+    def _sql(self, sql: str) -> str:
+        return sql.replace("?", "%s") if self.backend == "postgres" else sql
+
+    def execute(self, sql: str, params: Iterable = ()):
+        cur = self.raw.cursor()
+        cur.execute(self._sql(sql), tuple(params))
+        return cur
+
+    def executemany(self, sql: str, seq):
+        cur = self.raw.cursor()
+        cur.executemany(self._sql(sql), [tuple(p) for p in seq])
+        return cur
+
+    def insert_id(self, sql: str, params: Iterable = ()):
+        """Run an INSERT and return the new row's integer id."""
+        if self.backend == "postgres":
+            cur = self.execute(sql + " RETURNING id", params)
+            return cur.fetchone()["id"]
+        cur = self.execute(sql, params)
+        return cur.lastrowid
+
+
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    if _is_postgres():
+        import psycopg
+        from psycopg.rows import dict_row
+
+        raw = psycopg.connect(_database_url(), row_factory=dict_row)
+        conn = _Conn(raw, "postgres")
+    else:
+        raw = sqlite3.connect(DB_PATH)
+        raw.row_factory = sqlite3.Row
+        raw.execute("PRAGMA foreign_keys = ON")
+        conn = _Conn(raw, "sqlite")
     try:
         yield conn
-        conn.commit()
+        raw.commit()
     finally:
-        conn.close()
+        raw.close()
 
 
 def init_db() -> None:
     with get_conn() as conn:
-        conn.executescript(SCHEMA)
+        if conn.backend == "postgres":
+            pg_schema = SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+            # Strip `-- ...` line comments first: a comment may contain a ';',
+            # which would otherwise break the naive split-on-statement below.
+            pg_schema = re.sub(r"--[^\n]*", "", pg_schema)
+            for stmt in pg_schema.split(";"):
+                if "CREATE TABLE" in stmt.upper():
+                    conn.execute(stmt)
+        else:
+            conn.raw.executescript(SCHEMA)
 
 
 def _now() -> str:
@@ -143,7 +214,7 @@ def add_participant(name: str, email: str = "") -> int:
     if not name:
         raise ValueError("name required")
     with get_conn() as conn:
-        cur = conn.execute(
+        conn.execute(
             "INSERT INTO participants(name, email, created_at) VALUES(?, ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET email = excluded.email",
             (name, email.strip(), _now()),
@@ -153,9 +224,8 @@ def add_participant(name: str, email: str = "") -> int:
 
 
 def list_participants() -> list[dict]:
-    # Return plain dicts (not sqlite3.Row): these are used as Streamlit widget
-    # options, and Streamlit must pickle the selected option into session state.
-    # sqlite3.Row is not picklable.
+    # Return plain dicts: these are used as Streamlit widget options, and
+    # Streamlit must pickle the selected option into session state.
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM participants ORDER BY name").fetchall()
     return [dict(r) for r in rows]
@@ -176,24 +246,23 @@ def set_availability(participant_id: int, day: date, status: str) -> None:
         )
 
 
-def get_availability() -> list[sqlite3.Row]:
+def get_availability() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute("SELECT * FROM availability").fetchall()
+        return [dict(r) for r in conn.execute("SELECT * FROM availability").fetchall()]
 
 
 # ------------------------------------------------------------------ budget ---
 def add_budget_item(category: str, planned: float, notes: str = "") -> int:
     with get_conn() as conn:
-        cur = conn.execute(
+        return conn.insert_id(
             "INSERT INTO budget_items(category, planned, notes) VALUES(?, ?, ?)",
             (category.strip(), float(planned), notes.strip()),
         )
-        return cur.lastrowid
 
 
-def list_budget_items() -> list[sqlite3.Row]:
+def list_budget_items() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute("SELECT * FROM budget_items ORDER BY category").fetchall()
+        return [dict(r) for r in conn.execute("SELECT * FROM budget_items ORDER BY category").fetchall()]
 
 
 def remove_budget_item(item_id: int) -> None:
@@ -223,12 +292,11 @@ def add_expense(
     first = split_among[0]
     shares[first] = round(shares[first] + remainder, 2)
     with get_conn() as conn:
-        cur = conn.execute(
+        eid = conn.insert_id(
             "INSERT INTO expenses(description, amount, paid_by, spent_on, created_at) "
             "VALUES(?, ?, ?, ?, ?)",
             (description.strip(), amount, paid_by, spent_on.isoformat(), _now()),
         )
-        eid = cur.lastrowid
         conn.executemany(
             "INSERT INTO expense_shares(expense_id, participant_id, share) VALUES(?, ?, ?)",
             [(eid, pid, shares[pid]) for pid in split_among],
@@ -236,17 +304,20 @@ def add_expense(
     return eid
 
 
-def list_expenses() -> list[sqlite3.Row]:
+def list_expenses() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute(
-            "SELECT e.*, p.name AS payer_name FROM expenses e "
-            "JOIN participants p ON p.id = e.paid_by ORDER BY e.spent_on DESC, e.id DESC"
-        ).fetchall()
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT e.*, p.name AS payer_name FROM expenses e "
+                "JOIN participants p ON p.id = e.paid_by ORDER BY e.spent_on DESC, e.id DESC"
+            ).fetchall()
+        ]
 
 
-def get_expense_shares() -> list[sqlite3.Row]:
+def get_expense_shares() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute("SELECT * FROM expense_shares").fetchall()
+        return [dict(r) for r in conn.execute("SELECT * FROM expense_shares").fetchall()]
 
 
 def remove_expense(expense_id: int) -> None:
@@ -257,16 +328,15 @@ def remove_expense(expense_id: int) -> None:
 # ------------------------------------------------------------------- ideas ---
 def add_idea(title: str, url: str = "", notes: str = "") -> int:
     with get_conn() as conn:
-        cur = conn.execute(
+        return conn.insert_id(
             "INSERT INTO ideas(title, url, notes, created_at) VALUES(?, ?, ?, ?)",
             (title.strip(), url.strip(), notes.strip(), _now()),
         )
-        return cur.lastrowid
 
 
-def list_ideas() -> list[sqlite3.Row]:
+def list_ideas() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute("SELECT * FROM ideas ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in conn.execute("SELECT * FROM ideas ORDER BY created_at DESC").fetchall()]
 
 
 def remove_idea(idea_id: int) -> None:
@@ -333,19 +403,21 @@ def city_vote_counts() -> dict[str, int]:
 # --------------------------------------------------------------- checklist ---
 def add_checklist_item(label: str, owner_id: Optional[int] = None) -> int:
     with get_conn() as conn:
-        cur = conn.execute(
+        return conn.insert_id(
             "INSERT INTO checklist(label, owner_id, created_at) VALUES(?, ?, ?)",
             (label.strip(), owner_id, _now()),
         )
-        return cur.lastrowid
 
 
-def list_checklist() -> list[sqlite3.Row]:
+def list_checklist() -> list[dict]:
     with get_conn() as conn:
-        return conn.execute(
-            "SELECT c.*, p.name AS owner_name FROM checklist c "
-            "LEFT JOIN participants p ON p.id = c.owner_id ORDER BY c.done, c.id"
-        ).fetchall()
+        return [
+            dict(r)
+            for r in conn.execute(
+                "SELECT c.*, p.name AS owner_name FROM checklist c "
+                "LEFT JOIN participants p ON p.id = c.owner_id ORDER BY c.done, c.id"
+            ).fetchall()
+        ]
 
 
 def set_checklist_done(item_id: int, done: bool) -> None:
