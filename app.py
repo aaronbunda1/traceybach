@@ -280,8 +280,8 @@ with tabs[0]:
         st.session_state["_welcomed"] = True
 
     # --- Colorful hero banner ---
-    sub = "She said YES to Brian 💍 — now let's have some Fung! 🎉"
-    tagline = "Tracey Fung is tying the knot — time for one un-Fung-ettable send-off."
+    sub = "She said YES to Brian 💍 — let the celebration begin! 🎉"
+    tagline = "Tracey Fung is tying the knot — let's send her off in style."
     loc_line = f"📍 {location} · " if location else ""
     st.markdown(
         f"""
@@ -313,7 +313,7 @@ with tabs[0]:
     # --- Photo gallery of the bride-to-be ---
     photos = list_photos()
     if photos:
-        st.markdown("#### 💖 The Fung-to-be")
+        st.markdown("#### 💖 The bride-to-be")
         cols = st.columns(min(3, len(photos)))
         for i, path in enumerate(photos):
             with cols[i % len(cols)]:
@@ -375,10 +375,10 @@ with tabs[0]:
 
     st.markdown(
         "#### 🎀 The mission\n"
-        "One weekend. Zero chill. All Fung. Before Tracey becomes a Mrs., we're sending "
-        "her off with sun, sips, and shenanigans. Use the tabs up top to **lock the crew**, "
+        "One weekend. Zero chill. Before Tracey becomes a Mrs., we're sending her off with "
+        "sun, sips, and shenanigans. Use the tabs up top to **lock the crew**, "
         "**pick the weekend**, **vote on the city**, and **split the damage** — "
-        "let's make it Fung-forgettable. ✨ _#FungAndGames · #LastFlingBeforeTheRing_"
+        "let's make it unforgettable. ✨ _#LastFlingBeforeTheRing_"
     )
     if notes:
         st.success(f"💌 {notes}")
