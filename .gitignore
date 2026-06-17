@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+# Local data + secrets — never commit these
+bach_bash.db
+credentials.json
+token.json
+.streamlit/secrets.toml
